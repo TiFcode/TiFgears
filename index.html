@@ -1,0 +1,723 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>TiFgears</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    width: 100%; height: 100%;
+    overflow: hidden;
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+    background: #1a1a2e;
+    background-image:
+      radial-gradient(circle at 20% 50%, rgba(30,60,90,0.3) 0%, transparent 50%),
+      radial-gradient(circle at 80% 50%, rgba(90,30,60,0.2) 0%, transparent 50%),
+      linear-gradient(180deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+
+  #canvas {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+  }
+
+  .gear {
+    position: absolute;
+    cursor: grab;
+    will-change: transform;
+    filter: drop-shadow(0 4px 12px rgba(0,0,0,0.5));
+    transition: filter 0.2s;
+  }
+
+  .gear.dragging {
+    cursor: grabbing;
+    z-index: 1000 !important;
+    filter: drop-shadow(0 12px 30px rgba(0,0,0,0.7));
+  }
+
+  .gear.meshed {
+    filter: drop-shadow(0 4px 12px rgba(0,0,0,0.5)) drop-shadow(0 0 8px rgba(100,200,255,0.3));
+  }
+
+  .hint {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: rgba(255,255,255,0.4);
+    font-size: 13px;
+    pointer-events: none;
+    transition: opacity 2s;
+    text-align: center;
+  }
+  .hint.fade { opacity: 0; }
+
+  #toolbar {
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 12px;
+    z-index: 9000;
+  }
+
+  #toolbar button {
+    padding: 10px 18px;
+    border-radius: 25px;
+    border: 1px solid rgba(255,255,255,0.15);
+    background: rgba(255,255,255,0.1);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    color: white;
+    font-size: 14px;
+    cursor: pointer;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.3);
+    transition: background 0.2s, transform 0.1s;
+  }
+
+  #toolbar button:active {
+    background: rgba(255,255,255,0.25);
+    transform: scale(0.95);
+  }
+
+  #toolbar button.active {
+    background: rgba(100,200,255,0.3);
+    border-color: rgba(100,200,255,0.5);
+  }
+
+  #speed-display {
+    position: fixed;
+    top: 75px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: rgba(255,255,255,0.5);
+    font-size: 12px;
+    z-index: 9000;
+    pointer-events: none;
+  }
+
+  #trash-zone {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    width: 60px;
+    height: 60px;
+    border-radius: 50%;
+    background: rgba(255,60,60,0.15);
+    border: 2px dashed rgba(255,60,60,0.3);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+    z-index: 9000;
+    transition: background 0.2s, transform 0.2s;
+    pointer-events: none;
+  }
+
+  #trash-zone.active {
+    background: rgba(255,60,60,0.4);
+    border-color: rgba(255,60,60,0.8);
+    transform: scale(1.2);
+  }
+</style>
+</head>
+<body>
+
+<div id="canvas"></div>
+
+<div id="toolbar">
+  <button id="add-gear" title="Add Gear">⚙️ Add Gear</button>
+  <button id="toggle-spin" title="Start/Stop">▶️ Run</button>
+  <button id="clear-all" title="Clear All">🗑️ Clear</button>
+</div>
+
+<div id="speed-display"></div>
+<div id="trash-zone">🗑️</div>
+<div class="hint" id="hint">Drag gears near each other to mesh them · Click "Run" to spin · Drag to trash to remove</div>
+
+<script>
+(function() {
+  'use strict';
+
+  const canvas = document.getElementById('canvas');
+  const COLORS = [
+    { body: '#e74c3c', teeth: '#c0392b', accent: '#ff6b6b' },
+    { body: '#3498db', teeth: '#2980b9', accent: '#5dade2' },
+    { body: '#2ecc71', teeth: '#27ae60', accent: '#58d68d' },
+    { body: '#f39c12', teeth: '#e67e22', accent: '#f5b041' },
+    { body: '#9b59b6', teeth: '#8e44ad', accent: '#af7ac5' },
+    { body: '#1abc9c', teeth: '#16a085', accent: '#48c9b0' },
+    { body: '#e67e22', teeth: '#d35400', accent: '#eb984e' },
+    { body: '#ec407a', teeth: '#c2185b', accent: '#f06292' },
+    { body: '#78909c', teeth: '#546e7a', accent: '#90a4ae' },
+    { body: '#ff7043', teeth: '#e64a19', accent: '#ff8a65' },
+  ];
+
+  let gears = [];
+  let gearIdCounter = 0;
+  let zCounter = 1;
+  let isRunning = false;
+  let animFrame = null;
+
+  // Gear sizes (radius in px, number of teeth)
+  const GEAR_SIZES = [
+    { radius: 40, teeth: 10 },
+    { radius: 55, teeth: 14 },
+    { radius: 70, teeth: 18 },
+    { radius: 90, teeth: 22 },
+    { radius: 110, teeth: 28 },
+  ];
+
+  function createGearSVG(radius, numTeeth, color) {
+    const toothHeight = radius * 0.18;
+    const toothWidth = (2 * Math.PI * radius) / (numTeeth * 2.2);
+    const innerRadius = radius - toothHeight;
+    const outerRadius = radius + toothHeight;
+    const holeRadius = radius * 0.2;
+    const spokeHoleRadius = radius * 0.08;
+    const size = (outerRadius + 4) * 2;
+    const cx = size / 2;
+    const cy = size / 2;
+
+    let pathD = '';
+    for (let i = 0; i < numTeeth; i++) {
+      const angle = (i / numTeeth) * Math.PI * 2;
+      const nextAngle = ((i + 1) / numTeeth) * Math.PI * 2;
+      const toothStart = angle + 0.02;
+      const toothEnd = angle + (nextAngle - angle) * 0.45;
+      const gapStart = toothEnd + 0.02;
+      const gapEnd = nextAngle - 0.02;
+
+      const x1 = cx + Math.cos(toothStart) * innerRadius;
+      const y1 = cy + Math.sin(toothStart) * innerRadius;
+      const x2 = cx + Math.cos(toothStart + 0.03) * outerRadius;
+      const y2 = cy + Math.sin(toothStart + 0.03) * outerRadius;
+      const x3 = cx + Math.cos(toothEnd - 0.03) * outerRadius;
+      const y3 = cy + Math.sin(toothEnd - 0.03) * outerRadius;
+      const x4 = cx + Math.cos(toothEnd) * innerRadius;
+      const y4 = cy + Math.sin(toothEnd) * innerRadius;
+
+      if (i === 0) pathD += `M ${x1} ${y1} `;
+      pathD += `L ${x2} ${y2} L ${x3} ${y3} L ${x4} ${y4} `;
+
+      const x5 = cx + Math.cos(gapEnd) * innerRadius;
+      const y5 = cy + Math.sin(gapEnd) * innerRadius;
+      pathD += `A ${innerRadius} ${innerRadius} 0 0 1 ${x5} ${y5} `;
+    }
+    pathD += 'Z';
+
+    // Spoke holes
+    let spokeHoles = '';
+    const numSpokes = Math.max(3, Math.floor(numTeeth / 4));
+    const spokeRadius = (innerRadius + holeRadius) / 2;
+    for (let i = 0; i < numSpokes; i++) {
+      const a = (i / numSpokes) * Math.PI * 2;
+      const sx = cx + Math.cos(a) * spokeRadius;
+      const sy = cy + Math.sin(a) * spokeRadius;
+      spokeHoles += `<circle cx="${sx}" cy="${sy}" r="${spokeHoleRadius}" fill="#111" opacity="0.6"/>`;
+    }
+
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+      <defs>
+        <radialGradient id="grad-${gearIdCounter}" cx="40%" cy="35%" r="60%">
+          <stop offset="0%" stop-color="${color.accent}" stop-opacity="0.8"/>
+          <stop offset="100%" stop-color="${color.body}"/>
+        </radialGradient>
+        <filter id="bevel-${gearIdCounter}">
+          <feGaussianBlur in="SourceAlpha" stdDeviation="1" result="blur"/>
+          <feSpecularLighting in="blur" surfaceScale="3" specularConstant="0.6" specularExponent="20" result="spec">
+            <fePointLight x="${size*0.3}" y="${size*0.2}" z="100"/>
+          </feSpecularLighting>
+          <feComposite in="spec" in2="SourceAlpha" operator="in" result="specOut"/>
+          <feComposite in="SourceGraphic" in2="specOut" operator="arithmetic" k1="0" k2="1" k3="1" k4="0"/>
+        </filter>
+      </defs>
+      <g filter="url(#bevel-${gearIdCounter})">
+        <path d="${pathD}" fill="url(#grad-${gearIdCounter})" stroke="${color.teeth}" stroke-width="1.5"/>
+      </g>
+      <circle cx="${cx}" cy="${cy}" r="${holeRadius + 3}" fill="${color.teeth}" opacity="0.8"/>
+      <circle cx="${cx}" cy="${cy}" r="${holeRadius}" fill="#222"/>
+      <circle cx="${cx}" cy="${cy}" r="${holeRadius - 2}" fill="none" stroke="#444" stroke-width="1"/>
+      ${spokeHoles}
+    </svg>`;
+  }
+
+  function addGear(x, y, sizeIdx) {
+    if (sizeIdx === undefined) sizeIdx = Math.floor(Math.random() * GEAR_SIZES.length);
+    const size = GEAR_SIZES[sizeIdx];
+    const color = COLORS[gearIdCounter % COLORS.length];
+    const id = gearIdCounter++;
+
+    const el = document.createElement('div');
+    el.className = 'gear';
+    el.style.zIndex = zCounter++;
+    el.innerHTML = createGearSVG(size.radius, size.teeth, color);
+
+    const svgSize = (size.radius * 1.18 + 4) * 2;
+    el.style.width = svgSize + 'px';
+    el.style.height = svgSize + 'px';
+    el.style.marginLeft = (-svgSize / 2) + 'px';
+    el.style.marginTop = (-svgSize / 2) + 'px';
+
+    canvas.appendChild(el);
+
+    const gear = {
+      id,
+      el,
+      x,
+      y,
+      radius: size.radius,
+      outerRadius: size.radius * 1.18,
+      teeth: size.teeth,
+      sizeIdx,
+      angle: 0,
+      scale: 1,
+      tilt: 0, // user rotation via two-finger gesture
+      angularVelocity: 0,
+      meshes: [], // gears meshed with this one
+      color,
+      driver: false, // is this the driving gear?
+    };
+
+    el._gear = gear;
+    gears.push(gear);
+    updateGearTransform(gear);
+    setupGearDrag(gear);
+
+    // Animate entrance
+    el.style.opacity = '0';
+    el.style.transition = 'opacity 0.3s';
+    requestAnimationFrame(() => {
+      el.style.opacity = '1';
+      setTimeout(() => el.style.transition = '', 300);
+    });
+
+    return gear;
+  }
+
+  function updateGearTransform(gear) {
+    gear.el.style.transform = `translate(${gear.x}px, ${gear.y}px) rotate(${gear.angle + gear.tilt}deg) scale(${gear.scale})`;
+  }
+
+  function effectiveRadius(gear) {
+    return gear.outerRadius * gear.scale;
+  }
+
+  function effectiveBaseRadius(gear) {
+    return gear.radius * gear.scale;
+  }
+
+  function removeGear(gear) {
+    // Unmesh from all connected gears
+    gear.meshes.forEach(other => {
+      other.meshes = other.meshes.filter(g => g.id !== gear.id);
+      if (other.meshes.length === 0) other.el.classList.remove('meshed');
+    });
+    gear.el.remove();
+    gears = gears.filter(g => g.id !== gear.id);
+  }
+
+  // ── Meshing detection ──
+  function getMeshDistance(g1, g2) {
+    // Ideal mesh distance: teeth should interlock (using scaled radii)
+    return effectiveRadius(g1) + effectiveRadius(g2) - (effectiveBaseRadius(g1) * 0.12 + effectiveBaseRadius(g2) * 0.12);
+  }
+
+  function checkMeshing() {
+    // Save current velocities before rebuilding topology
+    gears.forEach(g => { 
+      if (g.angularVelocity !== undefined && g.angularVelocity !== 0) {
+        g.lastVelocity = g.angularVelocity;
+      }
+      g.meshes = []; 
+      g.el.classList.remove('meshed'); 
+    });
+
+    for (let i = 0; i < gears.length; i++) {
+      for (let j = i + 1; j < gears.length; j++) {
+        const g1 = gears[i];
+        const g2 = gears[j];
+        const dx = g2.x - g1.x;
+        const dy = g2.y - g1.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const meshDist = getMeshDistance(g1, g2);
+        const tolerance = Math.min(effectiveBaseRadius(g1), effectiveBaseRadius(g2)) * 0.35;
+
+        if (Math.abs(dist - meshDist) < tolerance) {
+          g1.meshes.push(g2);
+          g2.meshes.push(g1);
+          g1.el.classList.add('meshed');
+          g2.el.classList.add('meshed');
+        }
+      }
+    }
+  }
+
+  // ── Snap gears together when close ──
+  function snapGear(gear) {
+    for (const other of gears) {
+      if (other.id === gear.id) continue;
+      const dx = gear.x - other.x;
+      const dy = gear.y - other.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const meshDist = getMeshDistance(gear, other);
+      const snapRange = Math.min(effectiveBaseRadius(gear), effectiveBaseRadius(other)) * 0.5;
+
+      if (Math.abs(dist - meshDist) < snapRange && dist > 0) {
+        // Snap to exact mesh distance
+        const angle = Math.atan2(dy, dx);
+        gear.x = other.x + Math.cos(angle) * meshDist;
+        gear.y = other.y + Math.sin(angle) * meshDist;
+        updateGearTransform(gear);
+        break;
+      }
+    }
+    checkMeshing();
+  }
+
+  // ── Multi-touch drag / pinch-scale / two-finger-rotate ──
+  // When running: center 20% of radius = move gear, outer 80% = control speed
+  function setupGearDrag(gear) {
+    const pointers = new Map();
+    let startState = null;   // { x, y, scale, tilt }
+    let startMidpoint = null;
+    let startDist = null;
+    let startAngle = null;
+    let dragMode = 'move'; // 'move' or 'speed'
+    let speedStartAngle = 0; // angle from gear center at drag start
+    let speedStartVelocity = 0;
+    const trashZone = document.getElementById('trash-zone');
+
+    function getMid() {
+      let sx = 0, sy = 0;
+      pointers.forEach(p => { sx += p.x; sy += p.y; });
+      return { x: sx / pointers.size, y: sy / pointers.size };
+    }
+
+    function getDist() {
+      const arr = Array.from(pointers.values());
+      if (arr.length < 2) return 0;
+      const dx = arr[1].x - arr[0].x, dy = arr[1].y - arr[0].y;
+      return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    function getAngle() {
+      const arr = Array.from(pointers.values());
+      if (arr.length < 2) return 0;
+      return Math.atan2(arr[1].y - arr[0].y, arr[1].x - arr[0].x) * 180 / Math.PI;
+    }
+
+    // Get distance from pointer to gear center in screen coords
+    function distToGearCenter(clientX, clientY) {
+      const rect = gear.el.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      return Math.sqrt((clientX - cx) ** 2 + (clientY - cy) ** 2);
+    }
+
+    // Get angle from gear center to pointer (degrees)
+    function angleToGearCenter(clientX, clientY) {
+      const rect = gear.el.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      return Math.atan2(clientY - cy, clientX - cx) * 180 / Math.PI;
+    }
+
+    gear.el.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      gear.el.setPointerCapture(e.pointerId);
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+      // Determine drag mode when running
+      if (isRunning && pointers.size === 1) {
+        const dist = distToGearCenter(e.clientX, e.clientY);
+        const visualRadius = gear.outerRadius * gear.scale;
+        const centerThreshold = visualRadius * 0.2;
+
+        if (dist <= centerThreshold) {
+          dragMode = 'move';
+          gears.forEach(g => g.driver = false);
+          gear.driver = true;
+        } else {
+          dragMode = 'speed';
+          speedStartAngle = angleToGearCenter(e.clientX, e.clientY);
+          speedStartVelocity = gear.manualSpeed !== undefined ? gear.manualSpeed : BASE_SPEED;
+        }
+      } else {
+        dragMode = 'move';
+      }
+
+      gear.el.classList.add('dragging');
+      gear.el.style.zIndex = zCounter++;
+
+      startState = { x: gear.x, y: gear.y, scale: gear.scale, tilt: gear.tilt };
+      startMidpoint = getMid();
+
+      if (pointers.size >= 2) {
+        startDist = getDist();
+        startAngle = getAngle();
+        dragMode = 'move'; // multi-touch always moves/scales
+      }
+    });
+
+    gear.el.addEventListener('pointermove', (e) => {
+      if (!pointers.has(e.pointerId)) return;
+      e.preventDefault();
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+      if (isRunning && dragMode === 'speed' && pointers.size === 1) {
+        // Speed control: angular movement around gear center controls speed
+        const curAngle = angleToGearCenter(e.clientX, e.clientY);
+        let deltaAngle = curAngle - speedStartAngle;
+        // Normalize to -180..180
+        while (deltaAngle > 180) deltaAngle -= 360;
+        while (deltaAngle < -180) deltaAngle += 360;
+
+        // Map angular drag to speed: clockwise = positive, counterclockwise = negative
+        const newSpeed = speedStartVelocity + deltaAngle * 0.05;
+        gear.manualSpeed = Math.max(-8, Math.min(8, newSpeed));
+        gear.driver = true;
+        gears.forEach(g => { if (g.id !== gear.id) g.driver = false; });
+        return;
+      }
+
+      const mid = getMid();
+
+      // Translate
+      gear.x = startState.x + (mid.x - startMidpoint.x);
+      gear.y = startState.y + (mid.y - startMidpoint.y);
+
+      // Scale + Rotate (2+ fingers)
+      if (pointers.size >= 2 && startDist > 0) {
+        const curDist = getDist();
+        const curAngle = getAngle();
+        gear.scale = Math.max(0.3, Math.min(3, startState.scale * (curDist / startDist)));
+        gear.tilt = startState.tilt + (curAngle - startAngle);
+      }
+
+      updateGearTransform(gear);
+
+      // Recalculate meshes live during drag
+      if (isRunning) checkMeshing();
+
+      // Trash zone check
+      const trashRect = trashZone.getBoundingClientRect();
+      const trashCX = trashRect.left + trashRect.width / 2;
+      const trashCY = trashRect.top + trashRect.height / 2;
+      const distToTrash = Math.sqrt((mid.x - trashCX) ** 2 + (mid.y - trashCY) ** 2);
+      trashZone.classList.toggle('active', distToTrash < 60);
+    });
+
+    function onUp(e) {
+      pointers.delete(e.pointerId);
+
+      if (pointers.size === 0) {
+        gear.el.classList.remove('dragging');
+        trashZone.classList.remove('active');
+
+        if (dragMode === 'speed') {
+          dragMode = 'move';
+          return; // Don't snap/trash when controlling speed
+        }
+
+        // Check trash
+        const trashRect = trashZone.getBoundingClientRect();
+        const trashCX = trashRect.left + trashRect.width / 2;
+        const trashCY = trashRect.top + trashRect.height / 2;
+        const distToTrash = Math.sqrt((e.clientX - trashCX) ** 2 + (e.clientY - trashCY) ** 2);
+
+        if (distToTrash < 60) {
+          removeGear(gear);
+          return;
+        }
+
+        snapGear(gear);
+        if (isRunning) checkMeshing();
+      } else {
+        // Reset gesture baseline for remaining fingers
+        startState = { x: gear.x, y: gear.y, scale: gear.scale, tilt: gear.tilt };
+        startMidpoint = getMid();
+        if (pointers.size >= 2) {
+          startDist = getDist();
+          startAngle = getAngle();
+        }
+      }
+    }
+
+    gear.el.addEventListener('pointerup', onUp);
+    gear.el.addEventListener('pointercancel', onUp);
+  }
+
+  // ── Simulation ──
+  const BASE_SPEED = 1.5; // degrees per frame for driver gear
+
+  function propagateRotation(gear, visited) {
+    visited.add(gear.id);
+
+    for (const other of gear.meshes) {
+      if (visited.has(other.id)) continue;
+
+      // Meshed gears rotate opposite direction, speed inversely proportional to tooth count
+      const ratio = gear.teeth / other.teeth;
+      other.angularVelocity = -gear.angularVelocity * ratio;
+      other.angle += other.angularVelocity;
+      updateGearTransform(other);
+
+      propagateRotation(other, visited);
+    }
+  }
+
+  // Store per-gear last known angular velocity so groups keep their speed
+  // when topology changes (e.g. a gear is dragged away)
+
+  function findConnectedGroups() {
+    const visited = new Set();
+    const groups = [];
+    for (const g of gears) {
+      if (visited.has(g.id)) continue;
+      const group = [];
+      const stack = [g];
+      while (stack.length) {
+        const cur = stack.pop();
+        if (visited.has(cur.id)) continue;
+        visited.add(cur.id);
+        group.push(cur);
+        for (const m of cur.meshes) {
+          if (!visited.has(m.id)) stack.push(m);
+        }
+      }
+      groups.push(group);
+    }
+    return groups;
+  }
+
+  function simulate() {
+    if (!isRunning) return;
+
+    const groups = findConnectedGroups();
+    const visited = new Set();
+
+    for (const group of groups) {
+      if (group.length === 0) continue;
+
+      // Pick driver for this group: user-selected driver, or gear with highest
+      // last known velocity, or first gear in group
+      let driver = group.find(g => g.driver)
+                || group.reduce((best, g) => 
+                    (Math.abs(g.lastVelocity || 0) > Math.abs(best.lastVelocity || 0) ? g : best), group[0]);
+
+      // Determine driver speed
+      const speed = driver.manualSpeed !== undefined ? driver.manualSpeed
+                  : driver.lastVelocity !== undefined ? driver.lastVelocity
+                  : (group.length > 1 ? BASE_SPEED : 0.3);
+
+      driver.angularVelocity = speed;
+      driver.angle += driver.angularVelocity;
+      driver.lastVelocity = driver.angularVelocity;
+      updateGearTransform(driver);
+      visited.add(driver.id);
+
+      // Propagate to meshed gears
+      propagateRotation(driver, visited);
+
+      // Save lastVelocity for all gears in group
+      for (const g of group) {
+        g.lastVelocity = g.angularVelocity;
+      }
+    }
+
+    // Update speed display for primary driver
+    const primaryDriver = gears.find(g => g.driver) || gears.find(g => g.meshes.length > 0) || gears[0];
+    const speedEl = document.getElementById('speed-display');
+    const spd = primaryDriver ? (primaryDriver.manualSpeed !== undefined ? primaryDriver.manualSpeed : (primaryDriver.lastVelocity || BASE_SPEED)) : 0;
+    speedEl.textContent = `Speed: ${spd.toFixed(1)}°/frame`;
+
+    animFrame = requestAnimationFrame(simulate);
+  }
+
+  // ── Toolbar ──
+  document.getElementById('add-gear').addEventListener('click', () => {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const x = w * 0.2 + Math.random() * w * 0.6;
+    const y = h * 0.2 + Math.random() * h * 0.6;
+    addGear(x, y);
+  });
+
+  document.getElementById('toggle-spin').addEventListener('click', () => {
+    const btn = document.getElementById('toggle-spin');
+    isRunning = !isRunning;
+    btn.textContent = isRunning ? '⏸️ Pause' : '▶️ Run';
+    btn.classList.toggle('active', isRunning);
+
+    if (isRunning) {
+      checkMeshing();
+      simulate();
+    } else {
+      if (animFrame) cancelAnimationFrame(animFrame);
+      // Reset manual speeds and speed display
+      gears.forEach(g => delete g.manualSpeed);
+      document.getElementById('speed-display').textContent = '';
+    }
+  });
+
+  document.getElementById('clear-all').addEventListener('click', () => {
+    if (isRunning) {
+      isRunning = false;
+      const btn = document.getElementById('toggle-spin');
+      btn.textContent = '▶️ Run';
+      btn.classList.remove('active');
+      if (animFrame) cancelAnimationFrame(animFrame);
+    }
+    gears.forEach(g => g.el.remove());
+    gears = [];
+  });
+
+  // ── Background pan ──
+  let panStartX, panStartY, canvasOffX = 0, canvasOffY = 0, isPanning = false;
+
+  document.body.addEventListener('pointerdown', (e) => {
+    if (e.target !== document.body && e.target !== canvas) return;
+    e.preventDefault();
+    document.body.setPointerCapture(e.pointerId);
+    isPanning = true;
+    panStartX = e.clientX - canvasOffX;
+    panStartY = e.clientY - canvasOffY;
+  });
+
+  document.body.addEventListener('pointermove', (e) => {
+    if (!isPanning) return;
+    canvasOffX = e.clientX - panStartX;
+    canvasOffY = e.clientY - panStartY;
+    canvas.style.transform = `translate(${canvasOffX}px, ${canvasOffY}px)`;
+  });
+
+  document.body.addEventListener('pointerup', () => { isPanning = false; });
+  document.body.addEventListener('pointercancel', () => { isPanning = false; });
+
+  // ── Init: start with a few gears ──
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  addGear(w * 0.35, h * 0.45, 2);
+  addGear(w * 0.55, h * 0.45, 1);
+  addGear(w * 0.50, h * 0.60, 3);
+
+  // Auto-snap initial gears
+  gears.forEach(g => snapGear(g));
+
+  // Fade hint
+  setTimeout(() => {
+    document.getElementById('hint')?.classList.add('fade');
+  }, 5000);
+
+})();
+</script>
+</body>
+</html>
